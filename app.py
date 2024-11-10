@@ -1,11 +1,20 @@
 import os
 import sys
+import argparse
 
-def extract_codebase_content(root_dir):
+def extract_codebase_content(root_dir, include_tests=False):
     codebase_content = []
     
-    for dirpath, _, filenames in os.walk(root_dir):
+    for dirpath, dirnames, filenames in os.walk(root_dir):
+        # If not including tests, ignore directories with "test" in the name
+        if not include_tests:
+            dirnames[:] = [d for d in dirnames if 'test' not in d.lower()]
+        
         for filename in filenames:
+            # Ignore files with "test" in the name if not including tests
+            if not include_tests and 'test' in filename.lower():
+                continue
+            
             # Construct the file's relative path
             relative_path = os.path.relpath(os.path.join(dirpath, filename), root_dir)
             file_path = os.path.join(dirpath, filename)
@@ -24,17 +33,22 @@ def extract_codebase_content(root_dir):
     return "\n".join(codebase_content)
 
 
-# Check for directory path input
-if len(sys.argv) < 2:
-    print("Usage: python script.py <directory-path>")
-    sys.exit(1)
+# Set up argument parser
+parser = argparse.ArgumentParser(description="Extract codebase content from a directory.")
+parser.add_argument("directory", help="Path to the root directory of the codebase")
+parser.add_argument("-t", "--include-tests", action="store_true", 
+                    help="Include files and folders with 'test' in the name")
 
-# Get the directory path from the command line argument
-root_directory = sys.argv[1]
+# Parse arguments
+args = parser.parse_args()
 
-output = extract_codebase_content(root_directory)
+# Get the directory path and include_tests flag from arguments
+root_directory = args.directory
+include_tests = args.include_tests
 
-# Save the output to a file or print it directly
+output = extract_codebase_content(root_directory, include_tests=include_tests)
+
+# Save the output to a file
 with open("codebase_content.txt", "w") as output_file:
     output_file.write(output)
 
