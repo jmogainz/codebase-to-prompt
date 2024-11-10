@@ -12,7 +12,8 @@ def extract_codebase_content(root_dir, include_tests=False):
         
         for filename in filenames:
             # Ignore files with "test" in the name if not including tests
-            if not include_tests and 'test' in filename.lower():
+            # and ignore "codebase_content.txt"
+            if (not include_tests and 'test' in filename.lower()) or filename == "codebase_content.txt":
                 continue
             
             # Construct the file's relative path
@@ -52,4 +53,5 @@ output = extract_codebase_content(root_directory, include_tests=include_tests)
 with open("codebase_content.txt", "w") as output_file:
     output_file.write(output)
 
-print("Codebase content has been extracted and saved to codebase_content.txt.")
+# Print the output to the console
+print(output)
