@@ -6,6 +6,9 @@ def extract_codebase_content(root_dir, include_tests=False):
     codebase_content = []
     
     for dirpath, dirnames, filenames in os.walk(root_dir):
+        # Exclude specific directories
+        dirnames[:] = [d for d in dirnames if d not in ['.git', '.cache', 'build', 'install']]
+        
         # If not including tests, ignore directories with "test" in the name
         if not include_tests:
             dirnames[:] = [d for d in dirnames if 'test' not in d.lower()]
@@ -55,3 +58,4 @@ with open("codebase_content.txt", "w") as output_file:
 
 # Print the output to the console
 print(output)
+
