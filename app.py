@@ -9,14 +9,14 @@ def extract_codebase_content(root_dir, include_tests=False):
         # Exclude specific directories
         dirnames[:] = [d for d in dirnames if d not in ['.git', '.cache', 'build', 'install']]
         
-        # If not including tests, ignore directories with "test" in the name
+        # If not including tests, ignore directories with "test" or "mock" in the name
         if not include_tests:
-            dirnames[:] = [d for d in dirnames if 'test' not in d.lower()]
+            dirnames[:] = [d for d in dirnames if 'test' not in d.lower() and 'mock' not in d.lower()]
         
         for filename in filenames:
-            # Ignore files with "test" in the name if not including tests
+            # Ignore files with "test" or "mock" in the name if not including tests
             # and ignore "codebase_content.txt"
-            if (not include_tests and 'test' in filename.lower()) or filename == "codebase_content.txt":
+            if (not include_tests and ('test' in filename.lower() or 'mock' in filename.lower())) or filename == "codebase_content.txt":
                 continue
             
             # Construct the file's relative path
@@ -41,7 +41,7 @@ def extract_codebase_content(root_dir, include_tests=False):
 parser = argparse.ArgumentParser(description="Extract codebase content from a directory.")
 parser.add_argument("directory", help="Path to the root directory of the codebase")
 parser.add_argument("-t", "--include-tests", action="store_true", 
-                    help="Include files and folders with 'test' in the name")
+                    help="Include files and folders with 'test' or 'mock' in the name")
 
 # Parse arguments
 args = parser.parse_args()
