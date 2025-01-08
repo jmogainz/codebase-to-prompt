@@ -42,9 +42,11 @@ OUTPUT_FILE="prompt_script.txt"
   echo "Files with Contents:";
   echo "====================";
 
-  find . \( "${IGNORE_ARGS[@]}" -type f \( -name "*.py" -o -name "*.h" -o -name "*.hpp" -o -name "*.c" -o -name "*.cpp" -o -name "*.yaml" -o -name "*.yml" -o -name "*.json" -o -name "*.toml" -o -name "Docker*" -o -name "*.sh" -o -name "*.go" \) \) -print | while read -r file; do
+  find . \( "${IGNORE_ARGS[@]}" -type f \( -name "*.py" -o -name "*.h" -o -name "*.hpp" -o -name "*.c" -o -name "*.cpp" -o -name "*.yaml" -o -name "*.yml" -o -name "*.json" -o -name "*.toml" -o -name "Dockerfile*" -o -name "*.sh" -o -name "*.go" -o -name "Makefile" \) \) -print | while read -r file; do
     if [ -f "$file" ]; then
+      echo
       echo -e "\n==== $file ====";
+      echo
       cat "$file";
     fi
   done
