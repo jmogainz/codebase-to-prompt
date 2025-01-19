@@ -83,7 +83,8 @@ OUTPUT_FILE="prompt_script.txt"
             -o -name "Makefile" \
             -o -name "*.mk" \
             -o -name "*.env" \
-            -o -name "*.bat" \) \
+            -o -name "*.bat" \
+            -o -name "*.dart" \) \
          -print \) \
     | while read -r file; do
 
