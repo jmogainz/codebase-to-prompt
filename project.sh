@@ -6,25 +6,33 @@ IGNORE_FOLDERS=("build" "install" "cmake" "deps" ".vscode" "tests" ".git" ".venv
 # Flag to include "test" files and folders
 INCLUDE_TEST=false
 
-# Parse command line arguments
-for arg in "$@"; do
-  if [ "$arg" == "-t" ]; then
-    INCLUDE_TEST=true
-  else
-    IGNORE_FOLDERS+=("$arg")
-  fi
+# ------------------------------------------------------------------------------
+# Parse command line arguments:
+#   - If argument is "-t", set INCLUDE_TEST=true
+#   - Otherwise, treat argument as an additional ignore pattern
+# ------------------------------------------------------------------------------
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -t)
+      INCLUDE_TEST=true
+      shift
+      ;;
+    *)
+      IGNORE_FOLDERS+=("$1")
+      shift
+      ;;
+  esac
 done
 
-# Add "test" folders and files to the ignore list if -t is not passed
+# Add "test" patterns to the ignore list if -t is NOT passed
 if [ "$INCLUDE_TEST" = false ]; then
   IGNORE_FOLDERS+=("*test*")
 fi
 
 # ------------------------------------------------------------------------------
 # Build a single "prune" expression from IGNORE_FOLDERS
-#
-# We'll construct something like:
-#    \( ( -path "*/folder1" -o -path "*/folder2" -o ... ) -prune \) -o (the real work)
+#   We'll construct something like:
+#     \( ( -path "*/folder1" -o -path "*/folder2" -o ... ) -prune \) -o (the real work)
 # ------------------------------------------------------------------------------
 PRUNE_PATTERNS=()
 for folder in "${IGNORE_FOLDERS[@]}"; do
@@ -32,7 +40,7 @@ for folder in "${IGNORE_FOLDERS[@]}"; do
   PRUNE_PATTERNS+=( -path "*/$folder" -o )
 done
 
-# Remove the trailing "-o" so we don't end with an OR at the end
+# Remove the trailing "-o" so we don't end with an OR
 unset 'PRUNE_PATTERNS[${#PRUNE_PATTERNS[@]}-1]'
 
 # Output file
@@ -84,10 +92,10 @@ OUTPUT_FILE="prompt_script.txt"
             -o -name "*.mk" \
             -o -name "*.env" \
             -o -name "*.bat" \
+            -o -name "*.lua" \
             -o -name "*.dart" \) \
          -print \) \
     | while read -r file; do
-
         if [ -f "$file" ]; then
           echo
           echo "==== $file ===="
@@ -98,6 +106,5 @@ OUTPUT_FILE="prompt_script.txt"
 
 } > "$OUTPUT_FILE"
 
-# Notify user of completion
 echo "Project structure and file contents written to $OUTPUT_FILE"
 
