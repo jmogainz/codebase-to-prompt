@@ -50,6 +50,7 @@ done
 # If not including tests, skip 'test' + 'mock'
 if [ "$INCLUDE_TEST" = false ]; then
   IGNORE_ITEMS+=("test")
+  IGNORE_ITEMS+=("*_test.*")
   IGNORE_ITEMS+=("mock")
 fi
 
@@ -116,7 +117,7 @@ print_file_contents() {
          -o -name "*.yml" \
          -o -name "*.json" \
          -o -name "*.toml" \
-         -o -name "Dockerfile*" \
+         -o -name "*Dockerfile*" \
          -o -name "*.sh" \
          -o -name "*.go" \
          -o -name "Makefile" \
