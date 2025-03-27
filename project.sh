@@ -8,27 +8,41 @@
 # "prompt_script.txt", but if you pass `--stdout`, it writes to stdout instead.
 #
 # Usage:
-#   ./project.sh               # ignores "test"/"mock", writes to prompt_script.txt
-#   ./project.sh -t            # includes test/mock files, writes to prompt_script.txt
-#   ./project.sh build         # add extra ignore pattern "build", writes to prompt_script.txt
-#   ./project.sh --stdout      # prints everything to stdout
-#   ./project.sh --stdout -t   # prints everything to stdout, including test/mock
+#   ./project.sh                          # ignores "test"/"mock", writes to prompt_script.txt
+#   ./project.sh -t                       # includes test/mock files, writes to prompt_script.txt
+#   ./project.sh -i build -i install ...  # add extra ignore patterns, writes to prompt_script.txt
+#   ./project.sh -O '*.txt'               # only files matching '*.txt', ignoring default patterns
+#   ./project.sh --stdout                 # prints everything to stdout
+#   ./project.sh --stdout -t -i build     # prints everything to stdout, includes test, ignores 'build'
 ###############################################################################
 
 # Default ignore items (folder or partial path names, no wildcard yet)
 IGNORE_ITEMS=("build" "install" "cmake" "deps" ".vscode" "tests" ".git" ".venv_poetry" ".venv" ".cache_poetry" ".cache_pip" "__pycache__" ".cache")
 
-# By default, we also skip 'test'/'mock' patterns unless `-t` is provided
+# By default, we skip 'test'/'mock' patterns unless `-t` is provided
 INCLUDE_TEST=false
 
 # Whether to write to file or stdout
 WRITE_TO_STDOUT=false
 
+# If set, only include files matching this pattern
+ONLY_PATTERN=""
+
+print_usage() {
+  cat <<EOF
+Usage: $0 [options]
+
+Options:
+  -t               Include 'test'/'mock' files in output (otherwise they're ignored)
+  -i <pattern>     Add an ignore pattern (can be repeated multiple times)
+  -O <pattern>     Only include files matching this pattern (e.g. '*.txt', CMakeLists.txt, etc.)
+  --stdout         Print to stdout instead of writing to prompt_script.txt
+  -h, --help       Show this help message
+EOF
+}
+
 # ------------------------------------------------------------------------------
 # Parse command line arguments
-#   - If `-t`, set INCLUDE_TEST=true
-#   - If `--stdout`, set WRITE_TO_STDOUT=true
-#   - Otherwise, treat argument as an additional ignore pattern
 # ------------------------------------------------------------------------------
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -36,13 +50,37 @@ while [[ $# -gt 0 ]]; do
       INCLUDE_TEST=true
       shift
       ;;
+    -i)
+      # Require an argument after -i
+      if [[ -z "$2" ]]; then
+        echo "Error: '-i' requires a pattern argument."
+        exit 1
+      fi
+      IGNORE_ITEMS+=("$2")
+      shift 2
+      ;;
+    -O)
+      # Require an argument after -O
+      if [[ -z "$2" ]]; then
+        echo "Error: '-O' requires a pattern argument."
+        exit 1
+      fi
+      ONLY_PATTERN="$2"
+      shift 2
+      ;;
     --stdout)
       WRITE_TO_STDOUT=true
       shift
       ;;
+    -h|--help)
+      print_usage
+      exit 0
+      ;;
     *)
-      IGNORE_ITEMS+=("$1")
-      shift
+      echo "Unknown option: $1"
+      echo
+      print_usage
+      exit 1
       ;;
   esac
 done
@@ -100,66 +138,62 @@ print_file_contents() {
   for item in "${IGNORE_ITEMS[@]}"; do
     PRUNE_PATTERNS+=( -path "*/$item*" -o )
   done
+  # Remove the trailing "-o"
   unset 'PRUNE_PATTERNS[${#PRUNE_PATTERNS[@]}-1]'
 
-  # 2) Find only files with certain extensions
-  #    (like your original script: *.py, *.c, *.cpp, etc.)
-  #    We'll store them in an array to process next.
-  readarray -t FOUND_FILES < <(
-    find . \( \( "${PRUNE_PATTERNS[@]}" \) -prune \) -o \
-      \( -type f \
-         \( -name "*.py" \
-         -o -name "*.h" \
-         -o -name "*.hpp" \
-         -o -name "*.c" \
-         -o -name "*.cpp" \
-         -o -name "*.yaml" \
-         -o -name "*.yml" \
-         -o -name "*.json" \
-         -o -name "*.toml" \
-         -o -name "*Dockerfile*" \
-         -o -name "*.sh" \
-         -o -name "*.go" \
-         -o -name "Makefile" \
-         -o -name "*.mk" \
-         -o -name "*.env" \
-         -o -name "*.bat" \
-         -o -name "*.lua" \
-         -o -name "*.sql" \
-         -o -name "*.dart" \) \
-       -print \)
-  )
+  # 2) If ONLY_PATTERN is set, use that. Otherwise, use default file patterns.
+  if [ -n "$ONLY_PATTERN" ]; then
+    readarray -t FOUND_FILES < <(
+      find . \( \( "${PRUNE_PATTERNS[@]}" \) -prune \) -o \
+        \( -type f -name "$ONLY_PATTERN" -print \)
+    )
+  else
+    readarray -t FOUND_FILES < <(
+      find . \( \( "${PRUNE_PATTERNS[@]}" \) -prune \) -o \
+        \( -type f \
+           \( -name "*.py" \
+           -o -name "*.h" \
+           -o -name "*.hpp" \
+           -o -name "*.c" \
+           -o -name "*.cpp" \
+           -o -name "*.yaml" \
+           -o -name "*.yml" \
+           -o -name "*.json" \
+           -o -name "*.toml" \
+           -o -name "*Dockerfile*" \
+           -o -name "*.sh" \
+           -o -name "*.go" \
+           -o -name "Makefile" \
+           -o -name "*.mk" \
+           -o -name "*.env" \
+           -o -name "*.bat" \
+           -o -name "*.lua" \
+           -o -name "*.sql" \
+           -o -name "*.dart" \) \
+         -print \)
+    )
+  fi
 
   # If none found, just exit
   if [ ${#FOUND_FILES[@]} -eq 0 ]; then
     return
   fi
 
-  # 3) For each file, collect "modTime filePath" using $STAT_CMD, e.g. "123456789 .somefile"
-  #    Then we sort ascending by modTime.
+  # 3) For each file, collect "modTime filePath" using $STAT_CMD
   MOD_LIST=()
   for file in "${FOUND_FILES[@]}"; do
-    # Evaluate STAT_CMD, ignoring errors
-    # e.g. stat -c "%Y %n"  or  stat -f "%m %N"
     LINE=$(eval "$STAT_CMD \"$file\" 2>/dev/null")
-    # E.g. "1675021230 ./somefile"
-    # We'll store it as is. We'll handle spaces in filename carefully => assume no spaces
     MOD_LIST+=( "$LINE" )
   done
 
-  # 4) Sort numerically by modTime (the first field).
-  #    Then strip off the modTime field before printing.
-  #    We'll gather the sorted lines into an array, then parse out the path.
-  #    'sort -k1,1n' sorts by the first column numeric ascending => oldest first, newest last
+  # 4) Sort numerically by modTime (the first field)
   SORTED_LINES=$(printf "%s\n" "${MOD_LIST[@]}" | sort -k1,1n)
 
   # 5) Now read them in order, parse out the path, cat them
   while IFS= read -r line; do
-    # The first space-delimited chunk is the modTime, the rest is the path
     modTime="${line%% *}"
     path="${line#* }"
 
-    # Print a small divider
     echo
     echo
     echo "==== $path ===="
