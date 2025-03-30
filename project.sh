@@ -17,7 +17,7 @@
 ###############################################################################
 
 # Default ignore items (folder or partial path names, no wildcard yet)
-IGNORE_ITEMS=("build" "install" "cmake" "deps" ".vscode" "tests" ".git" ".venv_poetry" ".venv" ".cache_poetry" ".cache_pip" "__pycache__" ".cache")
+IGNORE_ITEMS=("build" "install" "cmake" "deps" ".vscode" "tests" ".git" ".venv_poetry" ".venv" ".cache_poetry" ".cache_pip" "__pycache__" ".cache" "vendor")
 
 # By default, we skip 'test'/'mock' patterns unless `-t` is provided
 INCLUDE_TEST=false
@@ -169,6 +169,9 @@ print_file_contents() {
            -o -name "*.bat" \
            -o -name "*.lua" \
            -o -name "*.sql" \
+           -o -name "*.gradle" \
+           -o -name "*.properties" \
+           -o -name "*.xml" \
            -o -name "*.dart" \) \
          -print \)
     )
