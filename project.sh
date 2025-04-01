@@ -7,26 +7,37 @@
 # time ascending (oldest first => newest last). By default, it writes to
 # "prompt_script.txt", but if you pass `--stdout`, it writes to stdout instead.
 #
-# Usage:
-#   ./project.sh                          # ignores "test"/"mock", writes to prompt_script.txt
-#   ./project.sh -t                       # includes test/mock files, writes to prompt_script.txt
-#   ./project.sh -i build -i install ...  # add extra ignore patterns, writes to prompt_script.txt
-#   ./project.sh -O '*.txt'               # only files matching '*.txt', ignoring default patterns
-#   ./project.sh --stdout                 # prints everything to stdout
-#   ./project.sh --stdout -t -i build     # prints everything to stdout, includes test, ignores 'build'
+# Usage examples:
+#   ./project.sh
+#       - Ignores test/mock files, writes to prompt_script.txt
+#
+#   ./project.sh -t
+#       - Includes test/mock files, writes to prompt_script.txt
+#
+#   ./project.sh -i build -i install ...
+#       - Adds extra ignore patterns, writes to prompt_script.txt
+#
+#   ./project.sh -O '*.txt'
+#       - Only includes files or directories matching '*.txt'
+#
+#   ./project.sh -O worker-app/lib/features/worker/ -O worker-app/lib/features/auth/ -O flutter-auth/
+#       - Only includes items whose path contains one or more of these patterns.
+#
+#   ./project.sh --stdout
+#       - Prints everything to stdout instead of writing to prompt_script.txt
 ###############################################################################
 
-# Default ignore items (folder or partial path names, no wildcard yet)
+# Default ignore items (folder or partial path names; no wildcard yet)
 IGNORE_ITEMS=("build" "install" "cmake" "deps" ".vscode" "tests" ".git" ".venv_poetry" ".venv" ".cache_poetry" ".cache_pip" "__pycache__" ".cache" "vendor")
 
-# By default, we skip 'test'/'mock' patterns unless `-t` is provided
+# By default, we skip 'test'/'mock' patterns unless -t is provided
 INCLUDE_TEST=false
 
 # Whether to write to file or stdout
 WRITE_TO_STDOUT=false
 
-# If set, only include files matching this pattern
-ONLY_PATTERN=""
+# Array to store patterns provided by -O flags (only include files/directories matching these patterns)
+ONLY_PATTERNS=()
 
 print_usage() {
   cat <<EOF
@@ -35,7 +46,8 @@ Usage: $0 [options]
 Options:
   -t               Include 'test'/'mock' files in output (otherwise they're ignored)
   -i <pattern>     Add an ignore pattern (can be repeated multiple times)
-  -O <pattern>     Only include files matching this pattern (e.g. '*.txt', CMakeLists.txt, etc.)
+  -O <pattern>     Only include files or directories whose full path matches this pattern.
+                   This flag can be specified multiple times.
   --stdout         Print to stdout instead of writing to prompt_script.txt
   -h, --help       Show this help message
 EOF
@@ -51,7 +63,6 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     -i)
-      # Require an argument after -i
       if [[ -z "$2" ]]; then
         echo "Error: '-i' requires a pattern argument."
         exit 1
@@ -60,12 +71,11 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     -O)
-      # Require an argument after -O
       if [[ -z "$2" ]]; then
         echo "Error: '-O' requires a pattern argument."
         exit 1
       fi
-      ONLY_PATTERN="$2"
+      ONLY_PATTERNS+=("$2")
       shift 2
       ;;
     --stdout)
@@ -85,69 +95,86 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# If not including tests, skip 'test' + 'mock'
+# If not including tests, add default test and mock ignore patterns
 if [ "$INCLUDE_TEST" = false ]; then
   IGNORE_ITEMS+=("test")
   IGNORE_ITEMS+=("*_test.*")
   IGNORE_ITEMS+=("mock")
 fi
 
-# Our output destination
+# Output file (if not using stdout)
 OUTPUT_FILE="prompt_script.txt"
 
 ###############################################################################
-# Decide which 'stat' format to use based on OS (macOS vs. Linux).
+# Decide which 'stat' command to use based on OS (macOS vs. Linux)
 ###############################################################################
 if [ "$(uname)" = "Darwin" ]; then
   # macOS/BSD
   STAT_CMD='stat -f "%m %N"'
 else
-  # Linux (and possibly other *nix that supports this)
+  # Linux (and possibly other *nix)
   STAT_CMD='stat -c "%Y %n"'
 fi
 
 ###############################################################################
-# Helper: Print directory structure
+# Helper: Print directory structure (filtered by -O patterns if provided)
 ###############################################################################
 print_directory_structure() {
   echo "Project Folder Structure:"
   echo "========================"
 
-  # Convert IGNORE_ITEMS -> find prune patterns
+  # Build prune patterns from IGNORE_ITEMS
   PRUNE_PATTERNS=()
   for item in "${IGNORE_ITEMS[@]}"; do
     PRUNE_PATTERNS+=( -path "*/$item*" -o )
   done
-  # Remove trailing "-o"
   unset 'PRUNE_PATTERNS[${#PRUNE_PATTERNS[@]}-1]'
 
-  find . \( \( "${PRUNE_PATTERNS[@]}" \) -prune \) -o \( -type d -print \) \
-    | sed -e 's|[^/]*/|  |g'
+  # If ONLY_PATTERNS is provided, include only directories whose full path contains one of them.
+  if [ ${#ONLY_PATTERNS[@]} -gt 0 ]; then
+    # Build a predicate for directories matching any ONLY_PATTERN using -path
+    DIR_EXPR=( \( -path "*${ONLY_PATTERNS[0]}*" )
+    for pattern in "${ONLY_PATTERNS[@]:1}"; do
+      DIR_EXPR+=( -o -path "*$pattern*" )
+    done
+    DIR_EXPR+=( \) )
+    find . \( \( "${PRUNE_PATTERNS[@]}" \) -prune \) -o \( -type d "${DIR_EXPR[@]}" -print \) \
+      | sed -e 's|[^/]*/|  |g'
+  else
+    find . \( \( "${PRUNE_PATTERNS[@]}" \) -prune \) -o \( -type d -print \) \
+      | sed -e 's|[^/]*/|  |g'
+  fi
 }
 
 ###############################################################################
-# Helper: Print file contents in ascending modification time order
+# Helper: Print file contents (filtered by -O patterns if provided)
 ###############################################################################
 print_file_contents() {
   echo
   echo "Files with Contents:"
   echo "===================="
 
-  # 1) Build find prune patterns from IGNORE_ITEMS
+  # Build prune patterns from IGNORE_ITEMS
   PRUNE_PATTERNS=()
   for item in "${IGNORE_ITEMS[@]}"; do
     PRUNE_PATTERNS+=( -path "*/$item*" -o )
   done
-  # Remove the trailing "-o"
   unset 'PRUNE_PATTERNS[${#PRUNE_PATTERNS[@]}-1]'
 
-  # 2) If ONLY_PATTERN is set, use that. Otherwise, use default file patterns.
-  if [ -n "$ONLY_PATTERN" ]; then
+  # Determine file selection criteria
+  if [ ${#ONLY_PATTERNS[@]} -gt 0 ]; then
+    # Build a find expression using -path so that any file whose full path contains one
+    # of the ONLY_PATTERNS is selected.
+    find_expr=( -type f \( -path "*${ONLY_PATTERNS[0]}*" )
+    for pattern in "${ONLY_PATTERNS[@]:1}"; do
+      find_expr+=( -o -path "*$pattern*" )
+    done
+    find_expr+=( \) -print )
     readarray -t FOUND_FILES < <(
-      find . \( \( "${PRUNE_PATTERNS[@]}" \) -prune \) -o \
-        \( -type f -name "$ONLY_PATTERN" -print \)
+      find . \( \( "${PRUNE_PATTERNS[@]}" \) -prune \) -o "${find_expr[@]}"
     )
   else
+    # Default: select files with certain extensions
     readarray -t FOUND_FILES < <(
       find . \( \( "${PRUNE_PATTERNS[@]}" \) -prune \) -o \
         \( -type f \
@@ -177,22 +204,22 @@ print_file_contents() {
     )
   fi
 
-  # If none found, just exit
+  # If no files are found, exit this section
   if [ ${#FOUND_FILES[@]} -eq 0 ]; then
     return
   fi
 
-  # 3) For each file, collect "modTime filePath" using $STAT_CMD
+  # For each found file, collect "modTime filePath" using the appropriate stat command
   MOD_LIST=()
   for file in "${FOUND_FILES[@]}"; do
     LINE=$(eval "$STAT_CMD \"$file\" 2>/dev/null")
     MOD_LIST+=( "$LINE" )
   done
 
-  # 4) Sort numerically by modTime (the first field)
+  # Sort by modification time (numerically, using the first field)
   SORTED_LINES=$(printf "%s\n" "${MOD_LIST[@]}" | sort -k1,1n)
 
-  # 5) Now read them in order, parse out the path, cat them
+  # Read each sorted line, extract the path, and output the file's content
   while IFS= read -r line; do
     modTime="${line%% *}"
     path="${line#* }"
@@ -206,7 +233,7 @@ print_file_contents() {
 }
 
 ###############################################################################
-# Write or print (depending on --stdout)
+# Output the results (to stdout or file)
 ###############################################################################
 if [ "$WRITE_TO_STDOUT" = true ]; then
   print_directory_structure
