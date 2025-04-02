@@ -104,6 +104,7 @@ fi
 
 # Output file (if not using stdout)
 OUTPUT_FILE="prompt_script.txt"
+IGNORE_ITEMS+=("$OUTPUT_FILE")
 
 ###############################################################################
 # Decide which 'stat' command to use based on OS (macOS vs. Linux)
@@ -199,6 +200,7 @@ print_file_contents() {
            -o -name "*.gradle" \
            -o -name "*.properties" \
            -o -name "*.xml" \
+           -o -name "*.txt" \
            -o -name "*.dart" \) \
          -print \)
     )
