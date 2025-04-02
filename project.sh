@@ -17,11 +17,12 @@
 #   ./project.sh -i build -i install ...
 #       - Adds extra ignore patterns, writes to prompt_script.txt
 #
-#   ./project.sh -O '*.txt'
-#       - Only includes files or directories matching '*.txt'
+#   ./project.sh -O "*.txt"
+#       - Only includes files or directories matching '*.txt' in the file
+#         contents section, while the file tree remains unfiltered.
 #
 #   ./project.sh -O worker-app/lib/features/worker/ -O worker-app/lib/features/auth/ -O flutter-auth/
-#       - Only includes items whose path contains one or more of these patterns.
+#       - Only includes items whose path matches exactly those patterns.
 #
 #   ./project.sh --stdout
 #       - Prints everything to stdout instead of writing to prompt_script.txt
@@ -46,7 +47,9 @@ Usage: $0 [options]
 Options:
   -t               Include 'test'/'mock' files in output (otherwise they're ignored)
   -i <pattern>     Add an ignore pattern (can be repeated multiple times)
-  -O <pattern>     Only include files or directories whose full path matches this pattern.
+  -O <pattern>     Only include files or directories whose full path (or basename, if no "/" is present)
+                   exactly matches the pattern if no wildcards (*, ?, [) are given.
+                   If wildcards are provided, they are used as-is.
                    This flag can be specified multiple times.
   --stdout         Print to stdout instead of writing to prompt_script.txt
   -h, --help       Show this help message
@@ -118,7 +121,7 @@ else
 fi
 
 ###############################################################################
-# Helper: Print directory structure (filtered by -O patterns if provided)
+# Helper: Print directory structure (always prints complete directory tree)
 ###############################################################################
 print_directory_structure() {
   echo "Project Folder Structure:"
@@ -131,20 +134,8 @@ print_directory_structure() {
   done
   unset 'PRUNE_PATTERNS[${#PRUNE_PATTERNS[@]}-1]'
 
-  # If ONLY_PATTERNS is provided, include only directories whose full path contains one of them.
-  if [ ${#ONLY_PATTERNS[@]} -gt 0 ]; then
-    # Build a predicate for directories matching any ONLY_PATTERN using -path
-    DIR_EXPR=( \( -path "*${ONLY_PATTERNS[0]}*" )
-    for pattern in "${ONLY_PATTERNS[@]:1}"; do
-      DIR_EXPR+=( -o -path "*$pattern*" )
-    done
-    DIR_EXPR+=( \) )
-    find . \( \( "${PRUNE_PATTERNS[@]}" \) -prune \) -o \( -type d "${DIR_EXPR[@]}" -print \) \
+  find . \( \( "${PRUNE_PATTERNS[@]}" \) -prune \) -o \( -type d -print \) \
       | sed -e 's|[^/]*/|  |g'
-  else
-    find . \( \( "${PRUNE_PATTERNS[@]}" \) -prune \) -o \( -type d -print \) \
-      | sed -e 's|[^/]*/|  |g'
-  fi
 }
 
 ###############################################################################
@@ -164,11 +155,46 @@ print_file_contents() {
 
   # Determine file selection criteria
   if [ ${#ONLY_PATTERNS[@]} -gt 0 ]; then
-    # Build a find expression using -path so that any file whose full path contains one
-    # of the ONLY_PATTERNS is selected.
-    find_expr=( -type f \( -path "*${ONLY_PATTERNS[0]}*" )
-    for pattern in "${ONLY_PATTERNS[@]:1}"; do
-      find_expr+=( -o -path "*$pattern*" )
+    # Build a find expression that applies each ONLY_PATTERN.
+    # If the pattern contains no wildcard (*, ?, or [):
+    #   - if it has a "/" then match the full relative path exactly
+    #   - otherwise, match the basename exactly.
+    # If wildcards are present, use them as provided.
+    find_expr=( -type f \( )
+    first=true
+    for pat in "${ONLY_PATTERNS[@]}"; do
+      if [ "$first" = true ]; then
+        first=false
+      else
+        find_expr+=( -o )
+      fi
+
+      if [[ "$pat" == *"*"* || "$pat" == *"?"* || "$pat" == *"["* ]]; then
+        # Pattern contains wildcard(s)
+        if [[ "$pat" == */* ]]; then
+          # Use -path for patterns that include a directory separator.
+          # If not already prefixed with "./", add it.
+          if [[ "$pat" != ./* ]]; then
+            pat="./$pat"
+          fi
+          find_expr+=( -path "$pat" )
+        else
+          # Use -name if no "/" is present.
+          find_expr+=( -name "$pat" )
+        fi
+      else
+        # No wildcards: require exact match.
+        if [[ "$pat" == */* ]]; then
+          # For patterns with a slash, match the full relative path.
+          if [[ "$pat" != ./* ]]; then
+            pat="./$pat"
+          fi
+          find_expr+=( -path "$pat" )
+        else
+          # For simple names, match the basename exactly.
+          find_expr+=( -name "$pat" )
+        fi
+      fi
     done
     find_expr+=( \) -print )
     readarray -t FOUND_FILES < <(
