@@ -7,37 +7,10 @@
 # time ascending (oldest first => newest last). By default, it writes to
 # "prompt_script.txt", but if you pass `--stdout`, it writes to stdout instead.
 #
-# Usage examples:
-#   ./project.sh
-#       - Ignores test/mock files, writes to prompt_script.txt
-#
-#   ./project.sh -t
-#       - Includes test/mock files, writes to prompt_script.txt
-#
-#   ./project.sh -i build -i install ...
-#       - Adds extra ignore patterns, writes to prompt_script.txt
-#
-#   ./project.sh -O "*.txt"
-#       - Only includes files whose path matches '*.txt', overriding default
-#         file patterns (the directory tree is still shown for the entire
-#         project if no folder patterns are given, subject to ignore rules).
-#
-#   ./project.sh -O worker-app/lib/features/worker/
-#       - Only includes files matching the default file patterns *inside*
-#         'worker-app/lib/features/worker' (subject to ignore rules),
-#         and shows the directory tree only for that folder path.
-#
-#   ./project.sh -O worker-app/lib/features/worker/ -O "*.txt"
-#       - Because a file pattern (`*.txt`) is present, it overrides the
-#         default file patterns. Only files matching `*.txt` anywhere are shown.
-#         Meanwhile, the folder pattern restricts the directory tree to that
-#         folder path for display.
-#
-#   ./project.sh --stdout
-#       - Prints everything to stdout instead of writing to prompt_script.txt
+# Includes additional -a flag for "additional" patterns.
 ###############################################################################
 
-# Default ignore items (folder or partial path names; no wildcard yet)
+# Default ignore items (by name or partial path)
 IGNORE_ITEMS=("build" "install" "cmake" "deps" ".vscode" "tests" ".git" ".venv_poetry" ".venv" ".cache_poetry" ".cache_pip" "__pycache__" ".cache" "vendor")
 
 # By default, we skip 'test'/'mock' patterns unless -t is provided
@@ -46,8 +19,11 @@ INCLUDE_TEST=false
 # Whether to write to file or stdout
 WRITE_TO_STDOUT=false
 
-# Collect all -O patterns; we'll separate them into folder patterns vs file patterns
+# We collect any -O patterns, then split them into folder/file patterns
 ONLY_PATTERNS=()
+
+# We collect any -a (“additional”) patterns, then split them as well
+ADD_PATTERNS=()
 
 print_usage() {
   cat <<EOF
@@ -56,12 +32,16 @@ Usage: $0 [options]
 Options:
   -t               Include 'test'/'mock' files in output (otherwise they're ignored)
   -i <pattern>     Add an ignore pattern (can be repeated multiple times).
-                   Example: -i worker-app  (will ignore worker-app and all subfolders)
+                   Glob/wildcard patterns are supported (e.g. -i build*).
   -O <pattern>     Include pattern(s). If the pattern ends with '/', it is
                    treated as a FOLDER pattern (keeping default file extensions).
                    If it does not end with '/', it is treated as a FILE pattern
                    (overriding the default file extensions).
-                   This flag can be specified multiple times.
+                   This flag can be specified multiple times and supports globs.
+  -a <pattern>     Add an *additional* pattern. If it ends with '/', it is treated
+                   as a folder pattern (just like -O). Otherwise it's a file
+                   pattern. These do *not* override defaults or -O patterns, but
+                   are merged with them.
   --stdout         Print to stdout instead of writing to prompt_script.txt
   -h, --help       Show this help message
 EOF
@@ -90,6 +70,14 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       ONLY_PATTERNS+=("$2")
+      shift 2
+      ;;
+    -a)
+      if [[ -z "$2" ]]; then
+        echo "Error: '-a' requires a pattern argument."
+        exit 1
+      fi
+      ADD_PATTERNS+=("$2")
       shift 2
       ;;
     --stdout)
@@ -124,10 +112,8 @@ IGNORE_ITEMS+=("$OUTPUT_FILE")
 # Decide which 'stat' command to use based on OS (macOS vs. Linux)
 ###############################################################################
 if [ "$(uname)" = "Darwin" ]; then
-  # macOS/BSD
   STAT_CMD='stat -f "%m %N"'
 else
-  # Linux (and possibly other *nix)
   STAT_CMD='stat -c "%Y %n"'
 fi
 
@@ -160,199 +146,252 @@ DEFAULT_FILE_GLOBS=(
   "*.dart"
 )
 
-# Build an array for the `find` command's `-name` checks. We'll insert "-o" between them.
+###############################################################################
+# Build an array for the `find` command's `-name` checks.
+# (Used if we haven't overridden with -O file patterns.)
+###############################################################################
 DEFAULT_FILE_PATTERN_ARGS=()
 for glob in "${DEFAULT_FILE_GLOBS[@]}"; do
   DEFAULT_FILE_PATTERN_ARGS+=( -name "$glob" -o )
 done
-# Remove the trailing '-o'
 unset 'DEFAULT_FILE_PATTERN_ARGS[${#DEFAULT_FILE_PATTERN_ARGS[@]}-1]'
 
 ###############################################################################
-# Separate ONLY_PATTERNS into folder patterns vs file patterns
-# ------------------------------------------------------------------------------
-# - If a pattern ends with '/', treat it as a folder pattern (keeping default
-#   file extensions).
-# - Otherwise, treat it as a file pattern (overrides default file extensions).
+# Separate ONLY_PATTERNS into folder vs. file
 ###############################################################################
 ONLY_FOLDER_PATTERNS=()
 ONLY_FILE_PATTERNS=()
 
 for pat in "${ONLY_PATTERNS[@]}"; do
   if [[ "$pat" == */ ]]; then
-    # Folder pattern
-    folder="${pat%/}"  # remove trailing slash
+    folder="${pat%/}"
     ONLY_FOLDER_PATTERNS+=("$folder")
   else
-    # File pattern
     ONLY_FILE_PATTERNS+=("$pat")
   fi
 done
 
 ###############################################################################
-# Build prune patterns from IGNORE_ITEMS
-#
-# This function:
-# 1) Strips trailing slashes from the ignore pattern
-# 2) Creates two rules:
-#       -path "*/ITEM"     (the directory/file itself)
-#       -path "*/ITEM/*"   (anything inside that directory)
-#    for each ignore item
+# Separate ADD_PATTERNS into folder vs. file
+###############################################################################
+ADD_FOLDER_PATTERNS=()
+ADD_FILE_PATTERNS=()
+
+for pat in "${ADD_PATTERNS[@]}"; do
+  if [[ "$pat" == */ ]]; then
+    folder="${pat%/}"
+    ADD_FOLDER_PATTERNS+=("$folder")
+  else
+    ADD_FILE_PATTERNS+=("$pat")
+  fi
+done
+
+###############################################################################
+# Expand folder patterns (which may contain wildcards) into actual directories
+###############################################################################
+expand_folder_patterns() {
+  local input_array=("$@")
+  local expanded=()
+
+  shopt -s nullglob globstar 2>/dev/null
+  for folder_pat in "${input_array[@]}"; do
+    matches=( $folder_pat ) # expands if possible
+    if [ ${#matches[@]} -eq 0 ]; then
+      echo "Warning: folder pattern '$folder_pat' did not match anything."
+      continue
+    fi
+    for m in "${matches[@]}"; do
+      if [ -d "$m" ]; then
+        expanded+=("$m")
+      else
+        echo "Warning: '$m' is not a directory (from pattern '$folder_pat')."
+      fi
+    done
+  done
+  shopt -u nullglob globstar 2>/dev/null
+
+  echo "${expanded[@]}"
+}
+
+# Expand the folder patterns from -O
+EXPANDED_FOLDER_PATHS=()
+if [ ${#ONLY_FOLDER_PATTERNS[@]} -gt 0 ]; then
+  mapfile -t expanded_1 < <( expand_folder_patterns "${ONLY_FOLDER_PATTERNS[@]}" )
+  EXPANDED_FOLDER_PATHS+=( "${expanded_1[@]}" )
+fi
+
+# Expand the folder patterns from -a
+EXPANDED_ADDITIONAL_PATHS=()
+if [ ${#ADD_FOLDER_PATTERNS[@]} -gt 0 ]; then
+  mapfile -t expanded_2 < <( expand_folder_patterns "${ADD_FOLDER_PATTERNS[@]}" )
+  EXPANDED_ADDITIONAL_PATHS+=( "${expanded_2[@]}" )
+fi
+
+###############################################################################
+# build_prune_patterns(): Build a PRUNE_PATTERNS array from IGNORE_ITEMS.
 ###############################################################################
 build_prune_patterns() {
   PRUNE_PATTERNS=()
   for item in "${IGNORE_ITEMS[@]}"; do
-    # Remove trailing slash if present, for consistency
     clean_item="${item%/}"
 
-    # If we want to ignore 'clean_item', we should ignore:
-    #  - the path that ends with ".../clean_item" 
-    #  - anything that starts with ".../clean_item/"
-    #
-    # This covers ignoring an entire directory and its subcontents,
-    # as well as ignoring a single file with that exact name.
-    PRUNE_PATTERNS+=( -path "*/${clean_item}" -o -path "*/${clean_item}/*" -o )
+    if [[ "$clean_item" == *"*"* || "$clean_item" == *"?"* || "$clean_item" == *"["* ]]; then
+      # wildcarded ignore
+      PRUNE_PATTERNS+=( -path "*${clean_item}" -o -path "*${clean_item}/*" -o )
+    else
+      # literal
+      PRUNE_PATTERNS+=( -path "*/${clean_item}" -o -path "*/${clean_item}/*" -o )
+    fi
   done
 
-  # Remove trailing '-o' if any
   if [ ${#PRUNE_PATTERNS[@]} -gt 0 ]; then
     unset 'PRUNE_PATTERNS[${#PRUNE_PATTERNS[@]}-1]'
   fi
 }
 
 ###############################################################################
-# Helper: Print directory structure
-#
-# - If there are no folder-only patterns, print the entire tree (minus ignored).
-# - If there are folder-only patterns, print a separate section for each.
+# Print the directory structure
 ###############################################################################
 print_directory_structure() {
   echo "Project Folder Structure:"
   echo "========================"
 
-  # Build the PRUNE_PATTERNS array now
   build_prune_patterns
 
   indent_sed='s|[^/]*/|  |g'
 
-  # Case: No folder-only patterns => entire tree
-  if [ ${#ONLY_FOLDER_PATTERNS[@]} -eq 0 ]; then
+  # Combine the two sets of expanded paths
+  ALL_FOLDERS_TO_DISPLAY=("${EXPANDED_FOLDER_PATHS[@]}" "${EXPANDED_ADDITIONAL_PATHS[@]}")
+
+  if [ ${#ALL_FOLDERS_TO_DISPLAY[@]} -eq 0 ]; then
+    # No specific folders => print from .
     find . \( \( "${PRUNE_PATTERNS[@]}" \) -prune \) -o -type d -print \
       | sed -e "$indent_sed"
     return
   fi
 
-  # Case: One or more folder-only patterns => separate sections
-  for folder in "${ONLY_FOLDER_PATTERNS[@]}"; do
-    if [ -d "$folder" ]; then
-      echo
-      echo "Directory subtree for: $folder"
-      echo "--------------------------------"
-      find "$folder" \
-        \( \( "${PRUNE_PATTERNS[@]}" \) -prune \) -o -type d -print \
-        | sed -e "$indent_sed"
-    else
-      echo
-      echo "Warning: '$folder' does not exist or is not a directory."
+  # Print each subtree
+  declare -A seen
+  for folder in "${ALL_FOLDERS_TO_DISPLAY[@]}"; do
+    if [[ -n "${seen[$folder]}" ]]; then
+      continue
     fi
+    seen[$folder]=1
+
+    echo
+    echo "Directory subtree for: $folder"
+    echo "--------------------------------"
+    find "$folder" \( \( "${PRUNE_PATTERNS[@]}" \) -prune \) -o -type d -print \
+      | sed -e "$indent_sed"
   done
 }
 
 ###############################################################################
-# Helper: Print file contents
+# Make a find expression array (properly spaced) for a list of file patterns.
+# We'll return them line-by-line so the caller can read them into an array.
+###############################################################################
+make_find_expr() {
+  local patterns=("$@")
+
+  # Start with: -type f (
+  # Then for each pattern => either "-path <pat>" or "-name <pat>"
+  # Finally ) -print
+  # We'll print each token on its own line for safe array reassembly.
+  echo "-type"
+  echo "f"
+  echo "("
+
+  local first=true
+  for pat in "${patterns[@]}"; do
+    if [ "$first" = true ]; then
+      first=false
+    else
+      echo "-o"
+    fi
+
+    if [[ "$pat" == *"/"* ]]; then
+      [[ "$pat" != ./* ]] && pat="./$pat"
+      echo "-path"
+      echo "$pat"
+    else
+      echo "-name"
+      echo "$pat"
+    fi
+  done
+
+  echo ")"
+  echo "-print"
+}
+
+###############################################################################
+# Print file contents (sorted by modification time ascending)
 ###############################################################################
 print_file_contents() {
   echo
   echo "Files with Contents:"
   echo "===================="
 
-  # Build the PRUNE_PATTERNS array now
   build_prune_patterns
+
+  # Decide final set of file patterns
+  FINAL_FILE_PATTERNS=()
+  if [ ${#ONLY_FILE_PATTERNS[@]} -gt 0 ]; then
+    # -O file patterns override defaults
+    FINAL_FILE_PATTERNS+=( "${ONLY_FILE_PATTERNS[@]}" )
+  else
+    # use defaults
+    FINAL_FILE_PATTERNS+=( "${DEFAULT_FILE_GLOBS[@]}" )
+  fi
+
+  # Then add the additional patterns
+  if [ ${#ADD_FILE_PATTERNS[@]} -gt 0 ]; then
+    FINAL_FILE_PATTERNS+=( "${ADD_FILE_PATTERNS[@]}" )
+  fi
+
+  # Decide which folders to search
+  ALL_FOLDERS_TO_SEARCH=( "${EXPANDED_FOLDER_PATHS[@]}" "${EXPANDED_ADDITIONAL_PATHS[@]}" )
+  if [ ${#ALL_FOLDERS_TO_SEARCH[@]} -eq 0 ]; then
+    ALL_FOLDERS_TO_SEARCH=( "." )
+  fi
+
+  # Prepare the find expression in an array
+  FIND_EXPR=()
+  while IFS= read -r token; do
+    FIND_EXPR+=( "$token" )
+  done < <( make_find_expr "${FINAL_FILE_PATTERNS[@]}" )
 
   FOUND_FILES=()
 
-  # ---------------------------------------------------------
-  # CASE 1: We have at least one FILE pattern => override defaults
-  # ---------------------------------------------------------
-  if [ ${#ONLY_FILE_PATTERNS[@]} -gt 0 ]; then
+  # Run find on each folder
+  declare -A seenFolder
+  for folder in "${ALL_FOLDERS_TO_SEARCH[@]}"; do
+    # Avoid duplicates
+    if [[ -n "${seenFolder[$folder]}" ]]; then
+      continue
+    fi
+    seenFolder[$folder]=1
 
-    # Build a single find expression that matches any of these FILE patterns (OR logic).
-    find_expr=( -type f \( )
-    first=true
-    for pat in "${ONLY_FILE_PATTERNS[@]}"; do
-      if [ "$first" = true ]; then
-        first=false
-      else
-        find_expr+=( -o )
-      fi
-
-      # If pattern has wildcard
-      if [[ "$pat" == *"*"* || "$pat" == *"?"* || "$pat" == *"["* ]]; then
-        # If it includes '/', use -path
-        if [[ "$pat" == */* ]]; then
-          # Ensure it starts with './' if not already
-          [[ "$pat" != ./* ]] && pat="./$pat"
-          find_expr+=( -path "$pat" )
-        else
-          # No slash => use -name
-          find_expr+=( -name "$pat" )
-        fi
-      else
-        # No wildcards => exact match
-        if [[ "$pat" == */* ]]; then
-          [[ "$pat" != ./* ]] && pat="./$pat"
-          find_expr+=( -path "$pat" )
-        else
-          find_expr+=( -name "$pat" )
-        fi
-      fi
-    done
-    find_expr+=( \) -print )
-
-    readarray -t FOUND_FILES < <(
-      find . \( \( "${PRUNE_PATTERNS[@]}" \) -prune \) -o "${find_expr[@]}"
+    readarray -t tmp_found < <(
+      find "$folder" \
+        \( \( "${PRUNE_PATTERNS[@]}" \) -prune \) -o \
+        "${FIND_EXPR[@]}"
     )
+    FOUND_FILES+=( "${tmp_found[@]}" )
+  done
 
-  # ---------------------------------------------------------
-  # CASE 2: Only FOLDER patterns => keep default file patterns, but limit to those folders
-  # ---------------------------------------------------------
-  elif [ ${#ONLY_FOLDER_PATTERNS[@]} -gt 0 ]; then
-    for folder in "${ONLY_FOLDER_PATTERNS[@]}"; do
-      if [ -d "$folder" ]; then
-        readarray -t tmp_found < <(
-          find "$folder" \( \( "${PRUNE_PATTERNS[@]}" \) -prune \) -o \
-            \( -type f \( "${DEFAULT_FILE_PATTERN_ARGS[@]}" \) -print \)
-        )
-        FOUND_FILES+=("${tmp_found[@]}")
-      fi
-    done
-
-  # ---------------------------------------------------------
-  # CASE 3: No patterns => default file extensions across entire project
-  # ---------------------------------------------------------
-  else
-    readarray -t FOUND_FILES < <(
-      find . \( \( "${PRUNE_PATTERNS[@]}" \) -prune \) -o \
-        \( -type f \( "${DEFAULT_FILE_PATTERN_ARGS[@]}" \) -print \)
-    )
-  fi
-
-  # If no files are found, just return
   if [ ${#FOUND_FILES[@]} -eq 0 ]; then
     return
   fi
 
-  # Collect "modTime filePath" for sorting by modification time
+  # Sort by modification time
   MOD_LIST=()
   for file in "${FOUND_FILES[@]}"; do
     LINE=$(eval "$STAT_CMD \"$file\" 2>/dev/null")
     [[ -n "$LINE" ]] && MOD_LIST+=( "$LINE" )
   done
 
-  # Sort by modification time (numerically, using the first field)
   SORTED_LINES=$(printf "%s\n" "${MOD_LIST[@]}" | sort -k1,1n)
 
-  # Read each sorted line, extract the path, and output file content
   while IFS= read -r line; do
     path="${line#* }"
     echo
@@ -364,7 +403,7 @@ print_file_contents() {
 }
 
 ###############################################################################
-# Output the results (to stdout or file)
+# Output the results (to stdout or to prompt_script.txt)
 ###############################################################################
 if [ "$WRITE_TO_STDOUT" = true ]; then
   print_directory_structure
