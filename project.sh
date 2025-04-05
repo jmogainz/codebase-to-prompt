@@ -126,9 +126,6 @@ DEFAULT_FILE_GLOBS=(
   "*.hpp"
   "*.c"
   "*.cpp"
-  "*.yaml"
-  "*.yml"
-  "*.json"
   "*.toml"
   "*Dockerfile*"
   "*.sh"
@@ -139,17 +136,10 @@ DEFAULT_FILE_GLOBS=(
   "*.bat"
   "*.lua"
   "*.sql"
-  "*.gradle"
-  "*.properties"
-  "*.xml"
-  "*.txt"
   "*.dart"
 )
 
-###############################################################################
-# Build an array for the `find` command's `-name` checks.
-# (Used if we haven't overridden with -O file patterns.)
-###############################################################################
+# Build an array for the `find` command's `-name` checks if no `-O` file patterns
 DEFAULT_FILE_PATTERN_ARGS=()
 for glob in "${DEFAULT_FILE_GLOBS[@]}"; do
   DEFAULT_FILE_PATTERN_ARGS+=( -name "$glob" -o )
@@ -210,7 +200,10 @@ expand_folder_patterns() {
   done
   shopt -u nullglob globstar 2>/dev/null
 
-  echo "${expanded[@]}"
+  # IMPORTANT: Print each path on its own line
+  for e in "${expanded[@]}"; do
+    echo "$e"
+  done
 }
 
 # Expand the folder patterns from -O
@@ -339,7 +332,7 @@ print_file_contents() {
     # -O file patterns override defaults
     FINAL_FILE_PATTERNS+=( "${ONLY_FILE_PATTERNS[@]}" )
   else
-    # use defaults
+    # use default
     FINAL_FILE_PATTERNS+=( "${DEFAULT_FILE_GLOBS[@]}" )
   fi
 
