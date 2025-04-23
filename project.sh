@@ -220,6 +220,30 @@ if [ ${#ADD_FOLDER_PATTERNS[@]} -gt 0 ]; then
   EXPANDED_ADDITIONAL_PATHS+=( "${expanded_2[@]}" )
 fi
 
+# -------------------------------------------------------------------
+# Include parent dirs of any -a file‐patterns so 'find' will search them
+# -------------------------------------------------------------------
+if [[ ${#ADD_FILE_PATTERNS[@]} -gt 0 && ${#EXPANDED_ADDITIONAL_PATHS[@]} -eq 0 ]]; then
+  if [[ ${#EXPANDED_FOLDER_PATHS[@]} -gt 0 ]]; then
+    # There are -O folders → search them with the -a globs
+    EXPANDED_ADDITIONAL_PATHS=( "${EXPANDED_FOLDER_PATHS[@]}" )
+  else
+    # No -O folders → search the whole repo from the root
+    EXPANDED_ADDITIONAL_PATHS+=( "." )
+  fi
+fi
+
+for pat in "${ADD_FILE_PATTERNS[@]}"; do
+  if [[ "$pat" == */* ]]; then
+    dir="${pat%/*}"
+    if [ -d "$dir" ]; then
+      EXPANDED_ADDITIONAL_PATHS+=( "$dir" )
+    else
+      echo "Warning: directory '$dir' for additional pattern '$pat' not found."
+    fi
+  fi
+done
+
 ###############################################################################
 # build_prune_patterns(): Build a PRUNE_PATTERNS array from IGNORE_ITEMS.
 ###############################################################################
@@ -303,10 +327,11 @@ make_find_expr() {
     fi
 
     if [[ "$pat" == *"/"* ]]; then
-      [[ "$pat" != ./* ]] && pat="./$pat"
+      # match the exact relative‐to‐repo path that `find` prints:
       echo "-path"
       echo "$pat"
     else
+      # no slashes → match on filename only
       echo "-name"
       echo "$pat"
     fi
@@ -326,73 +351,97 @@ print_file_contents() {
 
   build_prune_patterns
 
-  # Decide final set of file patterns
-  FINAL_FILE_PATTERNS=()
-  if [ ${#ONLY_FILE_PATTERNS[@]} -gt 0 ]; then
-    # -O file patterns override defaults
-    FINAL_FILE_PATTERNS+=( "${ONLY_FILE_PATTERNS[@]}" )
-  else
-    # use default
-    FINAL_FILE_PATTERNS+=( "${DEFAULT_FILE_GLOBS[@]}" )
-  fi
-
-  # Then add the additional patterns
-  if [ ${#ADD_FILE_PATTERNS[@]} -gt 0 ]; then
-    FINAL_FILE_PATTERNS+=( "${ADD_FILE_PATTERNS[@]}" )
-  fi
-
-  # Decide which folders to search
-  ALL_FOLDERS_TO_SEARCH=( "${EXPANDED_FOLDER_PATHS[@]}" "${EXPANDED_ADDITIONAL_PATHS[@]}" )
-  if [ ${#ALL_FOLDERS_TO_SEARCH[@]} -eq 0 ]; then
-    ALL_FOLDERS_TO_SEARCH=( "." )
-  fi
-
-  # Prepare the find expression in an array
-  FIND_EXPR=()
-  while IFS= read -r token; do
-    FIND_EXPR+=( "$token" )
-  done < <( make_find_expr "${FINAL_FILE_PATTERNS[@]}" )
-
   FOUND_FILES=()
 
-  # Run find on each folder
-  declare -A seenFolder
-  for folder in "${ALL_FOLDERS_TO_SEARCH[@]}"; do
-    # Avoid duplicates
-    if [[ -n "${seenFolder[$folder]}" ]]; then
-      continue
+  #
+  # 1) Search your -O folders with either ONLY_FILE_PATTERNS (if given)
+  #    or the DEFAULT_FILE_GLOBS
+  #
+  if [ ${#EXPANDED_FOLDER_PATHS[@]} -gt 0 ]; then
+    if [ ${#ONLY_FILE_PATTERNS[@]} -gt 0 ]; then
+      search_patterns=( "${ONLY_FILE_PATTERNS[@]}" )
+    else
+      search_patterns=( "${DEFAULT_FILE_GLOBS[@]}" )
     fi
-    seenFolder[$folder]=1
 
-    readarray -t tmp_found < <(
-      find "$folder" \
-        \( \( "${PRUNE_PATTERNS[@]}" \) -prune \) -o \
-        "${FIND_EXPR[@]}"
-    )
-    FOUND_FILES+=( "${tmp_found[@]}" )
-  done
+    # build a find expression for those
+    FIND_EXPR_ONLY=()
+    while IFS= read -r token; do
+      FIND_EXPR_ONLY+=( "$token" )
+    done < <( make_find_expr "${search_patterns[@]}" )
 
-  if [ ${#FOUND_FILES[@]} -eq 0 ]; then
-    return
+    # run find in each -O folder
+    for folder in "${EXPANDED_FOLDER_PATHS[@]}"; do
+      readarray -t tmp < <(
+        find "$folder" \
+          \( \( "${PRUNE_PATTERNS[@]}" \) -prune \) -o \
+          "${FIND_EXPR_ONLY[@]}"
+      )
+      FOUND_FILES+=( "${tmp[@]}" )
+    done
   fi
 
-  # Sort by modification time
+  # 2) Search your -a folders.
+  #    If you gave file patterns with -a, use them.
+  #    Otherwise fall back to the DEFAULT_FILE_GLOBS (mirrors -O behaviour).
+  #
+  if [ ${#EXPANDED_ADDITIONAL_PATHS[@]} -gt 0 ]; then
+    if [ ${#ADD_FILE_PATTERNS[@]} -gt 0 ]; then
+      search_patterns=( "${ADD_FILE_PATTERNS[@]}" )
+    else
+      search_patterns=( "${DEFAULT_FILE_GLOBS[@]}" )
+    fi
+
+    FIND_EXPR_ADD=()
+    while IFS= read -r token; do
+      FIND_EXPR_ADD+=( "$token" )
+    done < <( make_find_expr "${search_patterns[@]}" )
+
+    for folder in "${EXPANDED_ADDITIONAL_PATHS[@]}"; do
+      readarray -t tmp < <(
+        find "$folder" \
+          \( \( "${PRUNE_PATTERNS[@]}" \) -prune \) -o \
+          "${FIND_EXPR_ADD[@]}"
+      )
+      FOUND_FILES+=( "${tmp[@]}" )
+    done
+  fi
+
+  # 3) If -O gave us nothing, always walk "." with default globs
+  if [ ${#EXPANDED_FOLDER_PATHS[@]} -eq 0 ]; then
+    # --- build tokenised array -------------------------------
+    FIND_EXPR_DEFAULT=()
+    while IFS= read -r token; do
+      FIND_EXPR_DEFAULT+=( "$token" )
+    done < <( make_find_expr "${DEFAULT_FILE_GLOBS[@]}" )
+    # ----------------------------------------------------------
+
+    readarray -t tmp < <(
+      find . \
+        \( \( "${PRUNE_PATTERNS[@]}" \) -prune \) -o \
+        "${FIND_EXPR_DEFAULT[@]}"
+    )
+    FOUND_FILES+=( "${tmp[@]}" )
+  fi
+
+  [ ${#FOUND_FILES[@]} -eq 0 ] && return
+
+  # # just before building MOD_LIST
+  # FOUND_FILES=( "$(printf "%s\n" "${FOUND_FILES[@]}" | sort -u)" )
+
+  # now sort by mtime and dump each
   MOD_LIST=()
   for file in "${FOUND_FILES[@]}"; do
-    LINE=$(eval "$STAT_CMD \"$file\" 2>/dev/null")
+    LINE=$(eval "$STAT_CMD \"$file\"" 2>/dev/null)
     [[ -n "$LINE" ]] && MOD_LIST+=( "$LINE" )
   done
 
-  SORTED_LINES=$(printf "%s\n" "${MOD_LIST[@]}" | sort -k1,1n)
-
+  sort_lines=$(printf "%s\n" "${MOD_LIST[@]}" | sort -k1,1n)
   while IFS= read -r line; do
     path="${line#* }"
-    echo
-    echo
-    echo "==== $path ===="
-    echo
+    echo; echo "==== $path ===="; echo
     cat "$path"
-  done <<< "$SORTED_LINES"
+  done <<< "$sort_lines"
 }
 
 ###############################################################################
