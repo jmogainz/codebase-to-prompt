@@ -11,7 +11,7 @@
 ###############################################################################
 
 # Default ignore items (by name or partial path)
-IGNORE_ITEMS=("build" "install" "cmake" "deps" ".vscode" "tests" ".git" ".venv_poetry" ".venv" ".cache_poetry" ".cache_pip" "__pycache__" ".cache" "vendor")
+IGNORE_ITEMS=("build" "install" "cmake" "deps" ".vscode" "tests" ".git" ".venv_poetry" ".venv" ".cache_poetry" ".cache_pip" "__pycache__" ".cache" "vendor" ".null*")
 
 # By default, we skip 'test'/'mock' patterns unless -t is provided
 INCLUDE_TEST=false
@@ -111,11 +111,7 @@ IGNORE_ITEMS+=("$OUTPUT_FILE")
 ###############################################################################
 # Decide which 'stat' command to use based on OS (macOS vs. Linux)
 ###############################################################################
-if [ "$(uname)" = "Darwin" ]; then
-  STAT_CMD='stat -f "%m %N"'
-else
-  STAT_CMD='stat -c "%Y %n"'
-fi
+STAT_CMD='stat -c "%Y %n"'
 
 ###############################################################################
 # Define the default file extensions in ONE place
