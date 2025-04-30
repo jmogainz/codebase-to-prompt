@@ -435,6 +435,7 @@ print_file_contents() {
   sort_lines=$(printf "%s\n" "${MOD_LIST[@]}" | sort -k1,1n)
   while IFS= read -r line; do
     path="${line#* }"
+    echo;
     echo; echo "==== $path ===="; echo
     cat "$path"
   done <<< "$sort_lines"
