@@ -11,7 +11,7 @@
 ###############################################################################
 
 # Default ignore items (by name or partial path)
-IGNORE_ITEMS=("build" "install" "cmake" "deps" ".vscode" ".git" ".venv_poetry" ".venv" ".cache_poetry" ".cache_pip" "__pycache__" ".cache" "vendor" ".null*")
+IGNORE_ITEMS=("build" "install" "cmake" ".vscode" ".git" ".venv_poetry" ".venv" ".cache_poetry" ".cache_pip" "__pycache__" ".cache" "vendor" ".null*")
 
 # By default, we skip 'test'/'mock' patterns unless -t is provided
 INCLUDE_TEST=false
