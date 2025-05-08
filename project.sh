@@ -134,6 +134,9 @@ DEFAULT_FILE_GLOBS=(
   "*.lua"
   "*.sql"
   "*.dart"
+  "*.js"
+  "*.html"
+  "*.css"
 )
 
 # Build an array for the `find` command's `-name` checks if no `-O` file patterns
