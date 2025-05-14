@@ -7,11 +7,11 @@
 # time ascending (oldest first => newest last). By default, it writes to
 # "prompt_script.txt", but if you pass `--stdout`, it writes to stdout instead.
 #
-# Includes additional -a flag for "additional" patterns.
+# Includes additional -a flag for "additional" patterns that override ignores.
 ###############################################################################
 
 # Default ignore items (by name or partial path)
-IGNORE_ITEMS=("build" "install" "cmake" ".vscode" ".git" ".venv_poetry" ".venv" ".cache_poetry" ".cache_pip" "__pycache__" ".cache" "vendor" ".null*")
+IGNORE_ITEMS=("build" "install" "cmake" ".vscode" ".git" ".venv_poetry" ".venv" ".cache_poetry" ".cache_pip" "__pycache__" ".cache" "vendor" ".null*" "node_modules" "dist" ".dart_tool" ".cxx")
 
 # By default, we skip 'test'/'mock' patterns unless -t is provided
 INCLUDE_TEST=false
@@ -41,7 +41,7 @@ Options:
   -a <pattern>     Add an *additional* pattern. If it ends with '/', it is treated
                    as a folder pattern (just like -O). Otherwise it's a file
                    pattern. These do *not* override defaults or -O patterns, but
-                   are merged with them.
+                   they *do* override any ignores.
   --stdout         Print to stdout instead of writing to prompt_script.txt
   -h, --help       Show this help message
 EOF
@@ -139,13 +139,6 @@ DEFAULT_FILE_GLOBS=(
   "*.css"
 )
 
-# Build an array for the `find` command's `-name` checks if no `-O` file patterns
-DEFAULT_FILE_PATTERN_ARGS=()
-for glob in "${DEFAULT_FILE_GLOBS[@]}"; do
-  DEFAULT_FILE_PATTERN_ARGS+=( -name "$glob" -o )
-done
-unset 'DEFAULT_FILE_PATTERN_ARGS[${#DEFAULT_FILE_PATTERN_ARGS[@]}-1]'
-
 ###############################################################################
 # Separate ONLY_PATTERNS into folder vs. file
 ###############################################################################
@@ -185,7 +178,7 @@ expand_folder_patterns() {
 
   shopt -s nullglob globstar 2>/dev/null
   for folder_pat in "${input_array[@]}"; do
-    matches=( $folder_pat ) # expands if possible
+    matches=( $folder_pat )
     if [ ${#matches[@]} -eq 0 ]; then
       echo "Warning: folder pattern '$folder_pat' did not match anything."
       continue
@@ -224,11 +217,11 @@ fi
 # Include parent dirs of any -a file‐patterns so 'find' will search them
 # -------------------------------------------------------------------
 if [[ ${#ADD_FILE_PATTERNS[@]} -gt 0 && ${#EXPANDED_ADDITIONAL_PATHS[@]} -eq 0 ]]; then
+  # If no -a folders, but we have -a files, we either expand them inside -O folders
+  # or default to the root if no -O folders are specified.
   if [[ ${#EXPANDED_FOLDER_PATHS[@]} -gt 0 ]]; then
-    # There are -O folders → search them with the -a globs
     EXPANDED_ADDITIONAL_PATHS=( "${EXPANDED_FOLDER_PATHS[@]}" )
   else
-    # No -O folders → search the whole repo from the root
     EXPANDED_ADDITIONAL_PATHS+=( "." )
   fi
 fi
@@ -244,8 +237,13 @@ for pat in "${ADD_FILE_PATTERNS[@]}"; do
   fi
 done
 
+# We’ll collect all forcibly included directories here (from -a), so we
+# can skip ignoring them in our prune logic.
+FORCED_INCLUDES=("${EXPANDED_ADDITIONAL_PATHS[@]}")
+
 ###############################################################################
-# build_prune_patterns(): Build a PRUNE_PATTERNS array from IGNORE_ITEMS.
+# build_prune_patterns(): Build a PRUNE_PATTERNS array from IGNORE_ITEMS,
+# but exclude any forcibly included (-a) directories.
 ###############################################################################
 build_prune_patterns() {
   PRUNE_PATTERNS=()
@@ -264,6 +262,21 @@ build_prune_patterns() {
   if [ ${#PRUNE_PATTERNS[@]} -gt 0 ]; then
     unset 'PRUNE_PATTERNS[${#PRUNE_PATTERNS[@]}-1]'
   fi
+
+  # If we have forcibly included directories, ensure we do NOT prune them
+  if [ ${#FORCED_INCLUDES[@]} -gt 0 ]; then
+    local forced_expr=()
+    for f in "${FORCED_INCLUDES[@]}"; do
+      # Strip leading "./" if present
+      f="${f#./}"
+      [[ -z "$f" || "$f" = "." ]] && continue
+      forced_expr+=( -path "*/${f}" -o -path "*/${f}/*" -o )
+    done
+    if [ ${#forced_expr[@]} -gt 0 ]; then
+      unset 'forced_expr[${#forced_expr[@]}-1]'
+      PRUNE_PATTERNS=( "(" "${PRUNE_PATTERNS[@]}" ")" -a -not "(" "${forced_expr[@]}" ")" )
+    fi
+  fi
 }
 
 ###############################################################################
@@ -274,27 +287,27 @@ print_directory_structure() {
   echo "========================"
 
   build_prune_patterns
-
   indent_sed='s|[^/]*/|  |g'
 
-  # Combine the two sets of expanded paths
-  ALL_FOLDERS_TO_DISPLAY=("${EXPANDED_FOLDER_PATHS[@]}" "${EXPANDED_ADDITIONAL_PATHS[@]}")
-
-  if [ ${#ALL_FOLDERS_TO_DISPLAY[@]} -eq 0 ]; then
-    # No specific folders => print from .
-    find . \( \( "${PRUNE_PATTERNS[@]}" \) -prune \) -o -type d -print \
-      | sed -e "$indent_sed"
+  # If no -O folder patterns were given, we just show the entire project
+  # from ".", ignoring prunes (but forced includes remain).
+  if [ ${#EXPANDED_FOLDER_PATHS[@]} -eq 0 ]; then
+    find . \( \( "${PRUNE_PATTERNS[@]}" \) -prune \) -o -type d -print | sed -e "$indent_sed"
     return
   fi
 
-  # Print each subtree
+  # Otherwise, we unify the -O folder paths with any -a folder paths, and list each.
   declare -A seen
-  for folder in "${ALL_FOLDERS_TO_DISPLAY[@]}"; do
-    if [[ -n "${seen[$folder]}" ]]; then
-      continue
-    fi
-    seen[$folder]=1
+  ALL_FOLDERS_TO_DISPLAY=()
 
+  for f in "${EXPANDED_FOLDER_PATHS[@]}" "${EXPANDED_ADDITIONAL_PATHS[@]}"; do
+    if [[ -n "$f" && -z "${seen[$f]}" ]]; then
+      seen[$f]=1
+      ALL_FOLDERS_TO_DISPLAY+=( "$f" )
+    fi
+  done
+
+  for folder in "${ALL_FOLDERS_TO_DISPLAY[@]}"; do
     echo
     echo "Directory subtree for: $folder"
     echo "--------------------------------"
@@ -305,15 +318,11 @@ print_directory_structure() {
 
 ###############################################################################
 # Make a find expression array (properly spaced) for a list of file patterns.
-# We'll return them line-by-line so the caller can read them into an array.
 ###############################################################################
 make_find_expr() {
   local patterns=("$@")
+  # We'll output lines so the caller can read into an array
 
-  # Start with: -type f (
-  # Then for each pattern => either "-path <pat>" or "-name <pat>"
-  # Finally ) -print
-  # We'll print each token on its own line for safe array reassembly.
   echo "-type"
   echo "f"
   echo "("
@@ -325,13 +334,10 @@ make_find_expr() {
     else
       echo "-o"
     fi
-
     if [[ "$pat" == *"/"* ]]; then
-      # match the exact relative‐to‐repo path that `find` prints:
       echo "-path"
       echo "$pat"
     else
-      # no slashes → match on filename only
       echo "-name"
       echo "$pat"
     fi
@@ -353,10 +359,7 @@ print_file_contents() {
 
   FOUND_FILES=()
 
-  #
-  # 1) Search your -O folders with either ONLY_FILE_PATTERNS (if given)
-  #    or the DEFAULT_FILE_GLOBS
-  #
+  # 1) If we have -O folders, use them (with only-file-patterns or defaults)
   if [ ${#EXPANDED_FOLDER_PATHS[@]} -gt 0 ]; then
     if [ ${#ONLY_FILE_PATTERNS[@]} -gt 0 ]; then
       search_patterns=( "${ONLY_FILE_PATTERNS[@]}" )
@@ -364,13 +367,11 @@ print_file_contents() {
       search_patterns=( "${DEFAULT_FILE_GLOBS[@]}" )
     fi
 
-    # build a find expression for those
     FIND_EXPR_ONLY=()
     while IFS= read -r token; do
       FIND_EXPR_ONLY+=( "$token" )
     done < <( make_find_expr "${search_patterns[@]}" )
 
-    # run find in each -O folder
     for folder in "${EXPANDED_FOLDER_PATHS[@]}"; do
       readarray -t tmp < <(
         find "$folder" \
@@ -381,10 +382,7 @@ print_file_contents() {
     done
   fi
 
-  # 2) Search your -a folders.
-  #    If you gave file patterns with -a, use them.
-  #    Otherwise fall back to the DEFAULT_FILE_GLOBS (mirrors -O behaviour).
-  #
+  # 2) Process the -a folders (if any), using -a file patterns or defaults
   if [ ${#EXPANDED_ADDITIONAL_PATHS[@]} -gt 0 ]; then
     if [ ${#ADD_FILE_PATTERNS[@]} -gt 0 ]; then
       search_patterns=( "${ADD_FILE_PATTERNS[@]}" )
@@ -407,14 +405,12 @@ print_file_contents() {
     done
   fi
 
-  # 3) If -O gave us nothing, always walk "." with default globs
+  # 3) If no -O folders were given, fall back to searching "." with default globs
   if [ ${#EXPANDED_FOLDER_PATHS[@]} -eq 0 ]; then
-    # --- build tokenised array -------------------------------
     FIND_EXPR_DEFAULT=()
     while IFS= read -r token; do
       FIND_EXPR_DEFAULT+=( "$token" )
     done < <( make_find_expr "${DEFAULT_FILE_GLOBS[@]}" )
-    # ----------------------------------------------------------
 
     readarray -t tmp < <(
       find . \
@@ -426,10 +422,7 @@ print_file_contents() {
 
   [ ${#FOUND_FILES[@]} -eq 0 ] && return
 
-  # # just before building MOD_LIST
-  # FOUND_FILES=( "$(printf "%s\n" "${FOUND_FILES[@]}" | sort -u)" )
-
-  # now sort by mtime and dump each
+  # Sort by mtime ascending, then print
   MOD_LIST=()
   for file in "${FOUND_FILES[@]}"; do
     LINE=$(eval "$STAT_CMD \"$file\"" 2>/dev/null)
@@ -439,8 +432,9 @@ print_file_contents() {
   sort_lines=$(printf "%s\n" "${MOD_LIST[@]}" | sort -k1,1n)
   while IFS= read -r line; do
     path="${line#* }"
-    echo;
-    echo; echo "==== $path ===="; echo
+    echo
+    echo "==== $path ===="
+    echo
     cat "$path"
   done <<< "$sort_lines"
 }
