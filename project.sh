@@ -429,7 +429,7 @@ print_file_contents() {
     [[ -n "$LINE" ]] && MOD_LIST+=( "$LINE" )
   done
 
-  sort_lines=$(printf "%s\n" "${MOD_LIST[@]}" | sort -k1,1n)
+  sort_lines=$(printf "%s\n" "${MOD_LIST[@]}" | sort -k1,1nr)
   while IFS= read -r line; do
     path="${line#* }"
     echo
