@@ -384,6 +384,9 @@ print_file_contents() {
 
   # 2) Process the -a folders (if any), using -a file patterns or defaults
   if [ ${#EXPANDED_ADDITIONAL_PATHS[@]} -gt 0 ]; then
+
+    [[ ! " ${EXPANDED_ADDITIONAL_PATHS[*]} " =~ " ./ " ]] && EXPANDED_ADDITIONAL_PATHS+=( "." )
+
     if [ ${#ADD_FILE_PATTERNS[@]} -gt 0 ]; then
       search_patterns=( "${ADD_FILE_PATTERNS[@]}" )
     else
