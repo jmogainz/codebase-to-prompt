@@ -121,9 +121,15 @@ fi
 IGNORE_ITEMS+=("$OUTPUT_FILE")
 
 ###############################################################################
-# Decide which 'stat' command to use based on OS (macOS vs. Linux)
+# Detect stat command format based on actual behavior (GNU vs BSD)
 ###############################################################################
-STAT_CMD='stat -c "%Y %n"'
+if stat -c "%Y %n" /dev/null >/dev/null 2>&1; then
+    # GNU stat (Linux and some others)
+    STAT_CMD='stat -c "%Y %n"'
+else
+    # BSD stat (macOS and BSD systems)
+    STAT_CMD='stat -f "%m %N"'
+fi
 
 ###############################################################################
 # Define the default file extensions in ONE place
