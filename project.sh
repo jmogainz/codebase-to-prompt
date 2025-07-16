@@ -154,6 +154,8 @@ DEFAULT_FILE_GLOBS=(
   "*.js"
   "*.html"
   "*.css"
+  "*.yaml"
+  "*.yml"
 )
 
 ###############################################################################
@@ -281,10 +283,22 @@ build_prune_patterns() {
   # ------------------------------------------------------------------
   for item in "${IGNORE_ITEMS[@]}"; do
     clean_item="${item%/}"                  # strip trailing “/” if present
-    PRUNE_PATTERNS+=(
-      -path "*/${clean_item}"  -o           # ignore the file/dir itself
-      -path "*/${clean_item}/*" -o          # …and anything inside it
-    )
+    if [[ "$clean_item" == */* ]]; then
+      # Pattern already contains a “/” → treat it as a relative path and
+      # match both when find starts at project root and when it starts
+      # inside a sub-directory (e.g. after -O).
+      PRUNE_PATTERNS+=(
+        -path "${clean_item}"       -o      # exact path from current root
+        -path "${clean_item}/*"     -o      # anything under it
+        -path "*/${clean_item}"     -o      # same path at any deeper level
+        -path "*/${clean_item}/*"   -o
+      )
+    else
+      PRUNE_PATTERNS+=(
+        -path "*/${clean_item}"     -o      # ignore the file/dir itself
+        -path "*/${clean_item}/*"   -o      # …and anything inside it
+      )
+    fi
   done
 
   # drop the final “-o” so the expression is syntactically correct
