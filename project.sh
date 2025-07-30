@@ -243,14 +243,14 @@ if [ ${#ADD_FOLDER_PATTERNS[@]} -gt 0 ]; then
 fi
 
 # -------------------------------------------------------------------
-# If the user supplied -a <file> but *no* -a <folder> **and** there are
-# still no folder scopes from -O, fall back to scanning project root (".").
-# Otherwise, rely on the folder scopes that already exist.
+# If the user supplied -a <file> but *no* -a <folder>, add "." once and
+# remember that we did so (so we can treat it specially later).
 # -------------------------------------------------------------------
+ADDED_ROOT_FALLBACK=false
 if [[ ${#ADD_FILE_PATTERNS[@]} -gt 0 \
-   && ${#EXPANDED_ADDITIONAL_PATHS[@]} -eq 0 \
-   && ${#EXPANDED_FOLDER_PATHS[@]}    -eq 0 ]]; then
+   && ${#EXPANDED_ADDITIONAL_PATHS[@]} -eq 0 ]]; then
   EXPANDED_ADDITIONAL_PATHS+=( "." )
+  ADDED_ROOT_FALLBACK=true
 fi
 
 for pat in "${ADD_FILE_PATTERNS[@]}"; do
@@ -339,10 +339,16 @@ print_directory_structure() {
   build_prune_patterns
   indent_sed='s|[^/]*/|  |g'
 
-  # If no -O folder patterns were given, we just show the entire project
-  # from ".", ignoring prunes (but forced includes remain).
+  # ------------------------------------------------------------------
+  # When no explicit -O folder scopes exist:
+  #   • If "." was inserted ONLY as an implicit root‑fallback for -a <file>
+  #     → *do not* print the full project tree (too noisy).
+  #   • Otherwise                          → behave as before.
+  # ------------------------------------------------------------------
   if [ ${#EXPANDED_FOLDER_PATHS[@]} -eq 0 ]; then
-    find . \( \( "${PRUNE_PATTERNS[@]}" \) -prune \) -o -type d -print | sed -e "$indent_sed"
+    if [ "$ADDED_ROOT_FALLBACK" = false ]; then
+      find . \( \( "${PRUNE_PATTERNS[@]}" \) -prune \) -o -type d -print | sed -e "$indent_sed"
+    fi
     return
   fi
 
@@ -358,6 +364,10 @@ print_directory_structure() {
   done
 
   for folder in "${ALL_FOLDERS_TO_DISPLAY[@]}"; do
+    # Skip the implicit "." entry when it came from the root‑fallback
+    if [[ "$folder" == "." && "$ADDED_ROOT_FALLBACK" = true ]]; then
+      continue
+    fi
     echo
     echo "Directory subtree for: $folder"
     echo "--------------------------------"
@@ -407,16 +417,24 @@ print_file_contents() {
 
   build_prune_patterns
 
+  # -----------------------------------------------------------------
+  # Build ONE unified pattern list:
+  #   • base = ONLY_FILE_PATTERNS (if any) else DEFAULT_FILE_GLOBS
+  #   • always append every -a file pattern
+  # -----------------------------------------------------------------
+  if [ ${#ONLY_FILE_PATTERNS[@]} -gt 0 ]; then
+    search_patterns=( "${ONLY_FILE_PATTERNS[@]}" )
+  else
+    search_patterns=( "${DEFAULT_FILE_GLOBS[@]}" )
+  fi
+  if [ ${#ADD_FILE_PATTERNS[@]} -gt 0 ]; then
+    search_patterns+=( "${ADD_FILE_PATTERNS[@]}" )
+  fi
+
   FOUND_FILES=()
 
-  # 1) If we have -O folders, use them (with only-file-patterns or defaults)
+  # 1) If we have -O folders, search them first
   if [ ${#EXPANDED_FOLDER_PATHS[@]} -gt 0 ]; then
-    if [ ${#ONLY_FILE_PATTERNS[@]} -gt 0 ]; then
-      search_patterns=( "${ONLY_FILE_PATTERNS[@]}" )
-    else
-      search_patterns=( "${DEFAULT_FILE_GLOBS[@]}" )
-    fi
-
     FIND_EXPR_ONLY=()
     while IFS= read -r token; do
       FIND_EXPR_ONLY+=( "$token" )
@@ -432,27 +450,29 @@ print_file_contents() {
     done
   fi
 
-  # 2) Process the -a folders (if any), using -a file patterns or defaults
+  # 2) Process the -a folders (if any)
   if [ ${#EXPANDED_ADDITIONAL_PATHS[@]} -gt 0 ]; then
-
-    # Only add '.' if we *still* have nothing to search.  This prevents the
-    # project root from being scanned a second time and producing duplicates.
-    if [ ${#EXPANDED_ADDITIONAL_PATHS[@]} -eq 0 ]; then
-      EXPANDED_ADDITIONAL_PATHS+=( "." )
-    fi
-
-    if [ ${#ADD_FILE_PATTERNS[@]} -gt 0 ]; then
-      search_patterns=( "${ADD_FILE_PATTERNS[@]}" )
-    else
-      search_patterns=( "${DEFAULT_FILE_GLOBS[@]}" )
-    fi
-
-    FIND_EXPR_ADD=()
-    while IFS= read -r token; do
-      FIND_EXPR_ADD+=( "$token" )
-    done < <( make_find_expr "${search_patterns[@]}" )
-
     for folder in "${EXPANDED_ADDITIONAL_PATHS[@]}"; do
+
+      # --------------------------------------------------------------
+      # Decide which patterns to apply:
+      #   • if "." was added automatically → *only* the explicit -a files
+      #   • else (real -a folder)         → defaults + any -a files
+      # --------------------------------------------------------------
+      if [[ "$folder" == "." && "$ADDED_ROOT_FALLBACK" = true ]]; then
+        search_patterns=( "${ADD_FILE_PATTERNS[@]}" )
+      else
+        search_patterns=( "${DEFAULT_FILE_GLOBS[@]}" )
+        if [ ${#ADD_FILE_PATTERNS[@]} -gt 0 ]; then
+          search_patterns+=( "${ADD_FILE_PATTERNS[@]}" )
+        fi
+      fi
+
+      FIND_EXPR_ADD=()
+      while IFS= read -r token; do
+        FIND_EXPR_ADD+=( "$token" )
+      done < <( make_find_expr "${search_patterns[@]}" )
+
       readarray -t tmp < <(
         find "$folder" \
           \( \( "${PRUNE_PATTERNS[@]}" \) -prune \) -o \
